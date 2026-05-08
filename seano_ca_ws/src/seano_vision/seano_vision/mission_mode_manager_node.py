@@ -347,6 +347,29 @@ class MissionModeManager(Node):
         target = self._desired_mode(mgr_state)
         cur_mode = _norm_mode(self.st.mavros_mode)
 
+        # Operator manual authority guard:
+        # In nominal MISSION state, do not force the FCU back to AUTO when the
+        # operator has manually selected MANUAL/STABILIZE and no confirmed
+        # avoidance/failsafe/rejoin session is active. This prevents the system
+        # from "fighting" the operator during lake tests.
+        if (
+            mgr_state == "MISSION"
+            and cur_mode in ("MANUAL", "STABILIZE")
+            and not bool(getattr(self.st, "confirmed_avoid_session", False))
+            and not bool(getattr(self.st, "rejoin_active", False))
+            and not bool(getattr(self.st, "last_override", False))
+            and not bool(getattr(self.st, "last_failsafe", False))
+        ):
+            self._emit_event(
+                "MODE_REQ_SKIPPED",
+                {
+                    "mode": target,
+                    "cause": "operator_manual_authority",
+                    "reason": "manual_mode_selected_no_active_avoid_session",
+                },
+            )
+            return
+
         pending_timeout = float(self.get_parameter("pending_timeout_s").value)
         if self.st.pending_mode is not None and pending_timeout > 0.0:
             if (now - self.st.pending_since) > pending_timeout:
