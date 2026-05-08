@@ -4,7 +4,7 @@
 AUTO Takeover Manager (entrypoint retained as auto_controller_stub_node for active baseline compatibility)
 
 Tujuan (untuk uji autonomous minggu depan):
-- Monitor /ca/command (dari risk_evaluator) dan /ca/failsafe_active (dari watchdog)
+- Monitor /ca/command_safe (dari watchdog) dan /ca/failsafe_active
 - Saat bahaya -> takeover: auto_enable=true + rc_override_enable=true
 - Saat aman -> release RC override + auto_enable=false (autopilot lanjut mission)
 
@@ -50,7 +50,7 @@ class AutoTakeoverManager(Node):
         super().__init__("auto_controller_stub_node")  # keep same node name/entrypoint
 
         # ---------------- Topics ----------------
-        self.declare_parameter("command_topic", "/ca/command")
+        self.declare_parameter("command_topic", "/ca/command_safe")
         self.declare_parameter("failsafe_active_topic", "/ca/failsafe_active")
 
         self.declare_parameter("out_left_topic", "/seano/auto/left_cmd")
@@ -404,10 +404,10 @@ def main(args=None) -> None:
 #   forces AVOID before perception is stable.
 # - If master stays false forever, /ca/mode_manager_state stays MISSION.
 #
-# Behavior:
+# Default behavior:
 # - Start with master disabled.
-# - After master_auto_enable_delay_s, enable master inside this node.
-# - No external ros2 param set process is needed.
+# - Keep master disabled until the operator explicitly enables it.
+# - Delayed auto-enable is available only when explicitly requested by parameter.
 # ---------------------------------------------------------------------------
 
 
@@ -468,7 +468,7 @@ def _seano_install_internal_delayed_master_patch():
         _orig_init(self, *args, **kwargs)
 
         self._seano_master_guard_enable = bool(
-            _safe_declare(self, "master_auto_enable_after_startup", True)
+            _safe_declare(self, "master_auto_enable_after_startup", False)
         )
         self._seano_master_guard_delay_s = float(
             _safe_declare(self, "master_auto_enable_delay_s", 25.0)

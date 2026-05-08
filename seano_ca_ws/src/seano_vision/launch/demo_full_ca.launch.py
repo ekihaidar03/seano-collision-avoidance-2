@@ -9,8 +9,8 @@ Default baseline:
 Default active path:
   (optional) camera include launch
   detector -> /camera/detections
-  risk_evaluator -> /ca/risk + /ca/command or /ca/command_safe + /ca/mode + /ca/debug_image
-  watchdog_failsafe -> /ca/failsafe_active + /ca/failsafe_reason (+ status)
+  risk_evaluator -> /ca/risk + /ca/command + /ca/mode + /ca/debug_image
+  watchdog_failsafe -> /ca/command_safe + /ca/failsafe_active + /ca/failsafe_reason (+ status)
 
 Optional full-pipeline modules (disabled by default):
   waterline_horizon -> /vision/waterline_y + /vision/waterline_debug
@@ -27,10 +27,9 @@ Important compatibility notes:
   - Hardware default behavior is preserved.
   - Extra camera passthrough arguments are only used when:
       camera_launch == phase2_camera_source_test.launch.py
-  - Effective command topic is auto-selected:
-      * explicit command_topic (if non-empty)
-      * /ca/command_safe for phase2_camera_source_test.launch.py
-      * /ca/command for other camera launches (hardware default)
+  - Command topics are intentionally split:
+      * raw_command_topic is risk_evaluator output
+      * safe_command_topic is watchdog_failsafe output
 """
 
 from launch import LaunchDescription
@@ -83,32 +82,6 @@ def _effective_risk_input_topic(
             detections_raw_topic,
             "'",
             "))",
-        ]
-    )
-
-
-def _effective_command_topic(
-    explicit_topic: LaunchConfiguration,
-    camera_launch: LaunchConfiguration,
-) -> PythonExpression:
-    """
-    Pilih command topic secara aman:
-      1) kalau explicit command_topic diisi -> pakai itu
-      2) kalau camera launch = phase2_camera_source_test.launch.py
-         -> pakai /ca/command_safe (untuk simulasi / takeover manager)
-      3) selain itu -> pakai /ca/command (hardware default)
-    """
-    return PythonExpression(
-        [
-            "'",
-            explicit_topic,
-            "' if '",
-            explicit_topic,
-            "' != '' else (",
-            "'/ca/command_safe' if '",
-            camera_launch,
-            "' == 'phase2_camera_source_test.launch.py' else '/ca/command'",
-            ")",
         ]
     )
 
@@ -238,7 +211,8 @@ def generate_launch_description():
     freeze_reason_topic = LaunchConfiguration("freeze_reason_topic")
 
     risk_topic = LaunchConfiguration("risk_topic")
-    command_topic = LaunchConfiguration("command_topic")
+    raw_command_topic = LaunchConfiguration("raw_command_topic")
+    safe_command_topic = LaunchConfiguration("safe_command_topic")
     mode_topic = LaunchConfiguration("mode_topic")
     metrics_topic = LaunchConfiguration("metrics_topic")
     debug_image_topic = LaunchConfiguration("debug_image_topic")
@@ -303,11 +277,6 @@ def generate_launch_description():
         detections_raw_topic=detections_raw_topic,
         detections_filtered_topic=detections_filtered_topic,
         detections_fused_topic=detections_fused_topic,
-    )
-
-    effective_command_topic = _effective_command_topic(
-        explicit_topic=command_topic,
-        camera_launch=camera_launch,
     )
 
     # -------------------------
@@ -473,7 +442,7 @@ def generate_launch_description():
                 "detections_topic": effective_detections_for_risk_topic,
                 "image_topic": image_topic,
                 "risk_topic": risk_topic,
-                "command_topic": effective_command_topic,
+                "command_topic": raw_command_topic,
                 "mode_topic": mode_topic,
                 "metrics_topic": metrics_topic,
                 "debug_image_topic": debug_image_topic,
@@ -498,7 +467,8 @@ def generate_launch_description():
                 "image_topic": image_topic,
                 "detections_topic": detections_raw_topic,
                 "risk_topic": risk_topic,
-                "command_topic": effective_command_topic,
+                "command_in_topic": raw_command_topic,
+                "command_out_topic": safe_command_topic,
                 "mode_topic": mode_topic,
                 "startup_grace_s": ParameterValue(wd_startup_grace_s, value_type=float),
                 "start_in_failsafe": ParameterValue(wd_start_in_failsafe, value_type=bool),
@@ -670,11 +640,8 @@ def generate_launch_description():
             DeclareLaunchArgument("freeze_score_topic", default_value="/vision/freeze_score"),
             DeclareLaunchArgument("freeze_reason_topic", default_value="/vision/freeze_reason"),
             DeclareLaunchArgument("risk_topic", default_value="/ca/risk"),
-            DeclareLaunchArgument(
-                "command_topic",
-                default_value="",
-                description="Empty = auto-select (/ca/command for hardware, /ca/command_safe for phase2_camera_source_test)",
-            ),
+            DeclareLaunchArgument("raw_command_topic", default_value="/ca/command"),
+            DeclareLaunchArgument("safe_command_topic", default_value="/ca/command_safe"),
             DeclareLaunchArgument("mode_topic", default_value="/ca/mode"),
             DeclareLaunchArgument("metrics_topic", default_value="/ca/metrics"),
             DeclareLaunchArgument("debug_image_topic", default_value="/ca/debug_image"),

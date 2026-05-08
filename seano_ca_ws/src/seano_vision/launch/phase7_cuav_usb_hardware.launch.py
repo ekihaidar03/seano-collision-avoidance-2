@@ -142,7 +142,8 @@ def generate_launch_description():
     ca_detections_fused_topic = LaunchConfiguration("ca_detections_fused_topic")
     ca_detections_for_risk_topic = LaunchConfiguration("ca_detections_for_risk_topic")
     ca_risk_topic = LaunchConfiguration("ca_risk_topic")
-    ca_command_topic = LaunchConfiguration("ca_command_topic")
+    ca_raw_command_topic = LaunchConfiguration("ca_raw_command_topic")
+    ca_safe_command_topic = LaunchConfiguration("ca_safe_command_topic")
     ca_mode_topic = LaunchConfiguration("ca_mode_topic")
     ca_metrics_topic = LaunchConfiguration("ca_metrics_topic")
     ca_debug_image_topic = LaunchConfiguration("ca_debug_image_topic")
@@ -369,7 +370,8 @@ def generate_launch_description():
             "detections_fused_topic": ca_detections_fused_topic,
             "detections_for_risk_topic": ca_detections_for_risk_topic,
             "risk_topic": ca_risk_topic,
-            "command_topic": ca_command_topic,
+            "raw_command_topic": ca_raw_command_topic,
+            "safe_command_topic": ca_safe_command_topic,
             "mode_topic": ca_mode_topic,
             "metrics_topic": ca_metrics_topic,
             "debug_image_topic": ca_debug_image_topic,
@@ -493,7 +495,7 @@ def generate_launch_description():
         condition=IfCondition(_all_true(use_ca_pipeline, use_takeover_manager)),
         parameters=[
             {
-                "command_topic": ca_command_topic,
+                "command_topic": ca_safe_command_topic,
                 "failsafe_active_topic": "/ca/failsafe_active",
                 "out_left_topic": "/seano/auto/left_cmd",
                 "out_right_topic": "/seano/auto/right_cmd",
@@ -501,6 +503,7 @@ def generate_launch_description():
                 "rc_override_enable_topic": "/seano/rc_override_enable",
                 "master_enable_topic": "/seano/auto_master_enable",
                 "master_enable_on_start": ParameterValue(master_enable_on_start, value_type=bool),
+                "master_auto_enable_after_startup": False,
                 "cruise_speed": ParameterValue(cruise_speed, value_type=float),
                 "slow_factor": ParameterValue(slow_factor, value_type=float),
                 "turn_speed_factor": ParameterValue(turn_speed_factor, value_type=float),
@@ -551,8 +554,8 @@ def generate_launch_description():
                 "avoid_state_topic": "/ca/mode_manager_state",
                 "ca_mode_topic": "/ca/mode",
                 "mode_event_topic": "/ca/mode_manager_event",
-                "command_safe_topic": ca_command_topic,
-                "command_raw_topic": "/ca/command",
+                "command_safe_topic": ca_safe_command_topic,
+                "command_raw_topic": ca_raw_command_topic,
                 "risk_topic": "/ca/risk",
                 "failsafe_active_topic": "/ca/failsafe_active",
                 "auto_master_enable_topic": "/seano/auto_master_enable",
@@ -589,8 +592,8 @@ def generate_launch_description():
         ca_detections_filtered_topic,
         ca_detections_fused_topic,
         ca_risk_topic,
-        ca_command_topic,
-        "/ca/command_safe",
+        ca_raw_command_topic,
+        ca_safe_command_topic,
         "/ca/failsafe_active",
         "/ca/failsafe_reason",
         ca_mode_topic,
@@ -693,11 +696,8 @@ def generate_launch_description():
             default_value="",
         ),
         DeclareLaunchArgument("ca_risk_topic", default_value="/ca/risk"),
-        DeclareLaunchArgument(
-            "ca_command_topic",
-            default_value="/ca/command_safe",
-            description="Default hardware mengikuti watchdog-conditioned command stream (/ca/command_safe). Override ke /ca/command hanya untuk debugging atau eksperimen terkontrol.",
-        ),
+        DeclareLaunchArgument("ca_raw_command_topic", default_value="/ca/command"),
+        DeclareLaunchArgument("ca_safe_command_topic", default_value="/ca/command_safe"),
         DeclareLaunchArgument("ca_mode_topic", default_value="/ca/mode"),
         DeclareLaunchArgument("ca_metrics_topic", default_value="/ca/metrics"),
         DeclareLaunchArgument("ca_debug_image_topic", default_value="/ca/debug_image"),
