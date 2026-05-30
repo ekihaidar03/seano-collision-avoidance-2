@@ -288,6 +288,8 @@ class RiskEvaluatorNode(Node):
         self.declare_parameter("bearing_rate_bad_dps", 12.0)
         self.declare_parameter("risk_ema_alpha", 0.35)
         self.declare_parameter("vq_risk_floor", 0.80)
+        self.declare_parameter("close_corridor_high_floor", 0.62)
+        self.declare_parameter("vttc_emergency_high_floor", 0.65)
 
         # TTC proxy
         self.declare_parameter("ttc_area_threshold", 0.10)
@@ -660,6 +662,12 @@ class RiskEvaluatorNode(Node):
             bearing_rate_bad_dps = float(self._candidate_value("bearing_rate_bad_dps", incoming))
             risk_ema_alpha = float(self._candidate_value("risk_ema_alpha", incoming))
             vq_risk_floor = float(self._candidate_value("vq_risk_floor", incoming))
+            close_corridor_high_floor = float(
+                self._candidate_value("close_corridor_high_floor", incoming)
+            )
+            vttc_emergency_high_floor = float(
+                self._candidate_value("vttc_emergency_high_floor", incoming)
+            )
 
             ttc_area_threshold = float(self._candidate_value("ttc_area_threshold", incoming))
             ttc_max_s = float(self._candidate_value("ttc_max_s", incoming))
@@ -784,6 +792,10 @@ class RiskEvaluatorNode(Node):
 
         if not (0.0 <= vq_risk_floor <= 1.0):
             return False, "vq_risk_floor must be in [0, 1]"
+        if not (HIGH_RISK_MIN <= close_corridor_high_floor <= 1.0):
+            return False, "close_corridor_high_floor must be in [HIGH_RISK_MIN, 1]"
+        if not (HIGH_RISK_MIN <= vttc_emergency_high_floor <= 1.0):
+            return False, "vttc_emergency_high_floor must be in [HIGH_RISK_MIN, 1]"
 
         if ttc_area_threshold <= 0.0:
             return False, "ttc_area_threshold must be > 0"
@@ -1828,6 +1840,17 @@ class RiskEvaluatorNode(Node):
         w_ttc = float(self.get_parameter("w_ttc").value)
         risk_alpha = clamp(float(self.get_parameter("risk_ema_alpha").value), 0.01, 1.0)
         vq_risk_floor = clamp(float(self.get_parameter("vq_risk_floor").value), 0.0, 1.0)
+        close_high_floor = clamp(
+            float(self.get_parameter("close_corridor_high_floor").value),
+            HIGH_RISK_MIN,
+            1.0,
+        )
+        vttc_high_floor = clamp(
+            float(self.get_parameter("vttc_emergency_high_floor").value),
+            HIGH_RISK_MIN,
+            1.0,
+        )
+        vttc_stop_th = float(self.get_parameter("vttc_stop_threshold_s").value)
 
         vq, vq_src = self._get_vq(t)
         freeze, freeze_reason, freeze_src = self._get_freeze(t)
@@ -1864,6 +1887,8 @@ class RiskEvaluatorNode(Node):
             "avoid_mode": bool(self.avoid_mode),
             "risk_ema_alpha": float(risk_alpha),
             "vq_risk_floor": float(vq_risk_floor),
+            "close_corridor_high_floor": float(close_high_floor),
+            "vttc_emergency_high_floor": float(vttc_high_floor),
         }
 
         det_stale_s = float(self.get_parameter("detections_stale_s").value)
@@ -1894,7 +1919,10 @@ class RiskEvaluatorNode(Node):
             bottom_y_ratio = (tr.cy + tr.h / 2.0) / max(H, 1e-9)
             area_ratio = (tr.w * tr.h) / img_area
 
-            in_corridor = abs(x_ratio - 0.5) <= (center_band / 2.0)
+            corridor_half = max(center_band / 2.0, 1e-6)
+            corridor_offset = abs(x_ratio - 0.5)
+            in_corridor = corridor_offset <= corridor_half
+            near_corridor = corridor_offset <= min(0.45, corridor_half * 1.5)
             bottomness = smoothstep(bottom_danger, 1.0, bottom_y_ratio)
 
             proximity = smoothstep(near_area_ratio * 0.25, near_area_ratio, area_ratio)
@@ -1942,8 +1970,34 @@ class RiskEvaluatorNode(Node):
             # do not let poor vision unrealistically suppress object risk to near-zero.
             vq_scale = clamp(vq_risk_floor + (1.0 - vq_risk_floor) * vq, vq_risk_floor, 1.0)
             raw = clamp(conf_scaled * vq_scale, 0.0, 1.0)
+            raw_before_floor = raw
+
+            path_relevant = bool(in_corridor or near_corridor)
+            valid_floor_geometry = bool(path_relevant and bottom_y_ratio >= bottom_danger)
+            close_corridor_geometry = bool(
+                valid_floor_geometry
+                and bottomness >= 0.80
+                and area_ratio >= (near_area_ratio * 0.65)
+            )
+            vttc_emergency_geometry = bool(
+                valid_floor_geometry
+                and ttc_proxy is not None
+                and float(ttc_proxy) <= vttc_stop_th
+            )
+            risk_floor = 0.0
+            risk_floor_reason = ""
+            if vttc_emergency_geometry:
+                risk_floor = vttc_high_floor
+                risk_floor_reason = "VTTC_EMERGENCY_HIGH_FLOOR"
+            elif close_corridor_geometry:
+                risk_floor = close_high_floor
+                risk_floor_reason = "CLOSE_CORRIDOR_HIGH_FLOOR"
+            if risk_floor > 0.0:
+                raw = max(raw, risk_floor)
 
             tr.risk_ema = risk_alpha * raw + (1.0 - risk_alpha) * tr.risk_ema
+            if risk_floor > 0.0:
+                tr.risk_ema = max(tr.risk_ema, risk_floor)
 
             comp = {
                 "prox": float(prox_combo),
@@ -1955,16 +2009,22 @@ class RiskEvaluatorNode(Node):
                 "raw_geom": float(raw_geom),
                 "raw_conf": float(conf_scaled),
                 "vq_scale": float(vq_scale),
+                "raw_before_floor": float(raw_before_floor),
                 "raw": float(raw),
                 "ema": float(tr.risk_ema),
+                "risk_floor": float(risk_floor),
             }
             feat = {
                 "x_ratio": float(x_ratio),
                 "bottom_y_ratio": float(bottom_y_ratio),
                 "area_ratio": float(area_ratio),
                 "in_corridor": bool(in_corridor),
+                "near_corridor": bool(near_corridor),
+                "path_relevant": bool(path_relevant),
                 "vttc_s": ttc_proxy,
                 "vttc_reason": ttc_reason,
+                "risk_floor": float(risk_floor),
+                "risk_floor_reason": risk_floor_reason,
             }
 
             ranked.append((float(tr.risk_ema), tr, comp, feat))
@@ -2011,11 +2071,15 @@ class RiskEvaluatorNode(Node):
                     "bottom_y_ratio": float(top_feat["bottom_y_ratio"]),
                     "area_ratio": float(top_feat["area_ratio"]),
                     "in_corridor": bool(top_feat["in_corridor"]),
+                    "near_corridor": bool(top_feat["near_corridor"]),
+                    "path_relevant": bool(top_feat["path_relevant"]),
                     "bearing_deg": float(top.bearing_deg),
                     "bearing_rate_dps": float(top.bearing_rate_dps),
                     "dlog_area_dt": float(top.dlog_area_dt),
                     "vttc_s": top_feat.get("vttc_s"),
                     "vttc_reason": top_feat.get("vttc_reason", "unknown"),
+                    "risk_floor": float(top_feat.get("risk_floor", 0.0)),
+                    "risk_floor_reason": str(top_feat.get("risk_floor_reason", "")),
                 },
                 "components": top_comp,
                 "situation": situation,
@@ -2153,7 +2217,9 @@ class RiskEvaluatorNode(Node):
         )
         vttc = target_metrics.get("vttc_s", None)
         in_corridor = bool(target_metrics.get("in_corridor", False))
+        near_corridor = bool(target_metrics.get("near_corridor", False))
         area_ratio = float(target_metrics.get("area_ratio", 0.0))
+        risk_floor_reason = str(target_metrics.get("risk_floor_reason", "")).strip()
 
         W = float(self.image_w or 1)
         x_ratio = top.cx / max(W, 1e-9)
@@ -2164,12 +2230,16 @@ class RiskEvaluatorNode(Node):
         urgent_vttc = (vttc is not None) and (float(vttc) <= vttc_turn_th)
         emergency_vttc = (vttc is not None) and (float(vttc) <= vttc_stop_th)
 
+        if risk_floor_reason:
+            reason_codes.append(risk_floor_reason)
         if emergency_vttc:
             reason_codes.append("VTTC_EMERGENCY")
         elif urgent_vttc:
             reason_codes.append("VTTC_URGENT")
         if in_corridor:
             reason_codes.append("IN_CORRIDOR")
+        elif near_corridor:
+            reason_codes.append("NEAR_CORRIDOR")
         if very_close:
             reason_codes.append("VERY_CLOSE")
 
@@ -2644,7 +2714,9 @@ class RiskEvaluatorNode(Node):
             x = float(tg.get("x_ratio", 0.0))
             by = float(tg.get("bottom_y_ratio", 0.0))
             area = float(tg.get("area_ratio", 0.0))
-            corridor = "YES" if bool(tg.get("in_corridor", False)) else "NO"
+            in_corridor = bool(tg.get("in_corridor", False))
+            near_corridor = bool(tg.get("near_corridor", False))
+            corridor = "YES" if in_corridor else ("NEAR" if near_corridor else "NO")
             b = float(tg.get("bearing_deg", 0.0))
             br = float(tg.get("bearing_rate_dps", 0.0))
             dlog = float(tg.get("dlog_area_dt", 0.0))
